@@ -1,0 +1,15 @@
+{
+  "Name": "Resource Tagger",
+  "IsCustom": true,
+  "Description": "Can tag resource groups and read the Activity Log.",
+  "Actions": [
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/write",
+    "Microsoft.Insights/eventtypes/values/Read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+  ]
+}

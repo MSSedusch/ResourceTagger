@@ -268,3 +268,4 @@ __pycache__/
 
 # local configs
 **/*.local.config
+*.pubxml

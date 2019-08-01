@@ -6,13 +6,19 @@ using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
 using Microsoft.Azure.Management.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent;
 using System.Threading.Tasks;
+using System.Collections.Generic;
+using Microsoft.Azure.Insights.Models;
+using Microsoft.Rest.Azure.OData;
+using Microsoft.Azure.Insights;
 
 namespace ResourceTagger
 {
     public static class ResourceTaggerFunction
     {
+        private static string OPERATION_RESOURCEGROUP_WRITE = "Microsoft.Resources/subscriptions/resourceGroups/write";
+
         [FunctionName("ResourceTaggerFunction")]
-        public static async Task Run([TimerTrigger("* * * * *")] TimerInfo myTimer, ILogger log)
+        public static async Task Run([TimerTrigger("0 0 9 * * *")] TimerInfo myTimer, ILogger log)
         {
             log.LogInformation("Running Resource Tagger...");
             string ownerTagName = Environment.GetEnvironmentVariable("OwnerTag");
@@ -61,13 +67,58 @@ namespace ResourceTagger
                 var resourceGroups = azureSub.ResourceGroups.List();
                 foreach (var group in resourceGroups)
                 {
-                    if (group.Tags == null || group.Tags.Where(tag => tag.Key.Equals(ownerTagName, StringComparison.InvariantCultureIgnoreCase)).Count() == 0)
+                    try
                     {
-                        log.LogInformation($"Resource group {group.Name} does not contain owner tag...looking in activity log");
-                        //TODO: insightsClient.TenantEvents.ListWithHttpMessagesAsync();
+                        var defaultKeyValuePair = default(KeyValuePair<String, String>);
+                        var ownerTag = defaultKeyValuePair;
+                        if (group.Tags != null)
+                        {
+                            ownerTag = group.Tags.Where(tag => tag.Key.Equals(ownerTagName, StringComparison.InvariantCultureIgnoreCase)).FirstOrDefault();
+                        }
+
+                        if (ownerTag.Equals(defaultKeyValuePair))
+                        {
+                            String startTime = DateTime.Now.ToUniversalTime().AddHours(-25).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                            String endTime = DateTime.Now.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                            String resourceId = group.Id;
+
+                            string unknownOwner = "unknown";
+                            string newOwner = unknownOwner;
+                            var resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
+                            if (resourceGroupCreateLogs.Length == 0)
+                            {
+                                startTime = DateTime.Now.ToUniversalTime().AddDays(-90).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                                resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
+                            }
+                            if (resourceGroupCreateLogs.Length != 0)
+                            {
+                                newOwner = resourceGroupCreateLogs[0].Caller;
+                            }
+
+                            if (!unknownOwner.Equals(newOwner))
+                            {
+                                await group.Update().WithTag(ownerTagName, newOwner).ApplyAsync();
+                                log.LogInformation($"Resource group {group.Name} tagged with owner {newOwner}");
+                            }
+                        }
+                        else
+                        {
+                            //Console.WriteLine($"Resource group {group.Name} is already owned by {ownerTag.Value}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogError("Exception: " + ex);
                     }
                 }
             }
+        }
+
+        private static async Task<EventData[]> GetCreationLogs(String startTime, String endTime, String resourceId, String operation, InsightsClient client)
+        {
+            ODataQuery<EventData> query = new ODataQuery<EventData>($"eventTimestamp ge '{startTime}' and eventTimestamp le '{endTime}' and resourceUri eq '{resourceId}'");
+            var logs = await client.Events.ListAsync(query);
+            return logs.Where(log => log.OperationName.Value.Equals(operation)).ToArray();
         }
     }
 }

@@ -19,6 +19,7 @@ namespace ResourceTaggerConsole
         static void Main(string[] args)
         {
             Run().Wait();
+            Console.ReadLine();
         }
         public static async Task Run()
         {
@@ -77,31 +78,35 @@ namespace ResourceTaggerConsole
                         {
                             ownerTag = group.Tags.Where(tag => tag.Key.Equals(ownerTagName, StringComparison.InvariantCultureIgnoreCase)).FirstOrDefault();
                         }
-                            
+
                         if (ownerTag.Equals(defaultKeyValuePair))
                         {
-                            Console.WriteLine($"Resource group {group.Name} does not contain owner tag...looking in activity log");
-                            String startTime = DateTime.Now.ToUniversalTime().AddHours(-2).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                            //Console.WriteLine($"Resource group {group.Name} does not contain owner tag...looking in activity log");
+                            String startTime = DateTime.Now.ToUniversalTime().AddHours(-25).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                             String endTime = DateTime.Now.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                             String resourceId = group.Id;
 
-                            string newOwner = "unknown";
+                            string unknownOwner = "unknown";
+                            string newOwner = unknownOwner;
                             var resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
-                            if (resourceGroupCreateLogs.Length == 0)                            
+                            if (resourceGroupCreateLogs.Length == 0)
                             {
                                 startTime = DateTime.Now.ToUniversalTime().AddDays(-90).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
-                                resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);                                
+                                resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
                             }
                             if (resourceGroupCreateLogs.Length != 0)
                             {
                                 newOwner = resourceGroupCreateLogs[0].Caller;
                             }
-                            await group.Update().WithTag(ownerTagName, newOwner).ApplyAsync();
-                            Console.WriteLine($"Resource group {group.Name} tagged with owner {newOwner}");
+                            if (!unknownOwner.Equals(newOwner))
+                            {
+                                await group.Update().WithTag(ownerTagName, newOwner).ApplyAsync();
+                                Console.WriteLine($"Resource group {group.Name} tagged with owner {newOwner}");
+                            }
                         }
                         else
                         {
-                            Console.WriteLine($"Resource group {group.Name} is already owned by {ownerTag.Value}");
+                            //Console.WriteLine($"Resource group {group.Name} is already owned by {ownerTag.Value}");
                         }
                     }
                     catch (Exception ex)
