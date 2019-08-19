@@ -16,6 +16,8 @@ namespace CostPerOwner
 {
     class Program
     {
+        public static string OWNER_UNKNOWN = "unknown";
+
         static void Main(string[] args)
         {
             // Console.WriteLine("Hello World!");
@@ -55,36 +57,36 @@ namespace CostPerOwner
                 ""name"": ""PreTaxCost"",
                 ""function"": ""Sum""
             }
-        }
+        },
+        ""grouping"": [
+            {
+            ""type"": ""Dimension"",
+            ""name"": ""ResourceGroup""
+            }
+        ]
     }
 }
 ";
             string currency = String.Empty;
             Dictionary<string, Double> costPerUser = new Dictionary<string, Double>();
             Dictionary<string, Double> costPerGroup = new Dictionary<string, Double>();
+            Dictionary<string, string> groupOwner = new Dictionary<string, string>();
             string token = await GetOAuthTokenFromAAD();
+
             foreach (var subscriptionId in subscriptionIds.Split(",", StringSplitOptions.RemoveEmptyEntries))
             {
                 var azureSub = azure.WithSubscription(subscriptionId);
                 var resourceGroups = azureSub.ResourceGroups.List();
-                foreach (var group in resourceGroups)
+
+                string uri = $"https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.CostManagement/query?api-version=2019-01-01";
+
+                while (!String.IsNullOrEmpty(uri))
                 {
-                    var resourceGroupOwner = "unknown";
-                    var defaultKeyValuePair = default(KeyValuePair<String, String>);
-                    var ownerTag = defaultKeyValuePair;
-                    if (group.Tags != null)
-                    {
-                        ownerTag = group.Tags.Where(tag => tag.Key.Equals(ownerTagName, StringComparison.InvariantCultureIgnoreCase)).FirstOrDefault();
-                    }
+                    QueryResult result = null;
+                    int costIndex = -1;
+                    int currencyIndex = -1;
+                    int groupIndex = -1;
 
-                    if (!ownerTag.Equals(defaultKeyValuePair))
-                    {
-                        resourceGroupOwner = ownerTag.Value;
-                    }
-
-                    Console.WriteLine($"Calculating costs for resource group {group.Name} in subscription {subscriptionId} which belongs to {resourceGroupOwner}");
-
-                    string uri = $"https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{group.Name}/providers/Microsoft.CostManagement/query?api-version=2019-01-01";
                     var request = HttpWebRequest.CreateHttp(uri);
                     request.ContentType = "application/json";
                     request.Method = "POST";
@@ -103,37 +105,15 @@ namespace CostPerOwner
                         {
                             responseString = reader.ReadToEnd();
                         }
-                        var result = JsonConvert.DeserializeObject<QueryResult>(responseString);
-
-                        if (!costPerUser.ContainsKey(resourceGroupOwner))
-                        {
-                            costPerUser.Add(resourceGroupOwner, 0);
-                        }
-
-                        int costIndex = GetColumnIndex(result.properties.columns, "PreTaxCost");
-                        int currencyIndex = GetColumnIndex(result.properties.columns, "Currency");
+                        result = JsonConvert.DeserializeObject<QueryResult>(responseString);
+                        uri = result.properties.nextLink;
+                        costIndex = GetColumnIndex(result.properties.columns, "PreTaxCost");
+                        currencyIndex = GetColumnIndex(result.properties.columns, "Currency");
+                        groupIndex = GetColumnIndex(result.properties.columns, "ResourceGroup");
                         if (costIndex < 0)
                         {
-                            Console.WriteLine($"Could not find cost index for resource group {group.Name}");
+                            Console.WriteLine($"Could not find cost index for subscription {subscriptionId}");
                             continue;
-                        }
-
-                        string keyNameGroup = $"{subscriptionId}/{group.Name}";
-                        costPerGroup.Add(keyNameGroup, 0);
-                        foreach (var row in result.properties.rows)
-                        {
-                            costPerUser[resourceGroupOwner] += (Double)row[costIndex];
-                            costPerGroup[keyNameGroup] += (Double)row[costIndex];
-
-                            var currencyOfRow = (string)row[currencyIndex];
-                            if (String.IsNullOrEmpty(currency))
-                            {
-                                currency = currencyOfRow;
-                            }
-                            else if (!currency.Equals(currencyOfRow))
-                            {
-                                throw new Exception("There are different currencies");
-                            }
                         }
                     }
                     catch (WebException wex)
@@ -146,13 +126,80 @@ namespace CostPerOwner
                                 errorMessage = reader.ReadToEnd();
                             }
                         }
-                        Console.WriteLine($"Error while calculating costs for resource group {group.Name}: {wex} ({errorMessage})");
+                        Console.WriteLine($"Error while calculating costs for subscription {subscriptionId}: {wex} ({errorMessage})");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error while calculating costs for resource group {group.Name}: {ex}");
+                        Console.WriteLine($"Error while calculating costs for subscription {subscriptionId}: {ex}");
+                    }
+
+                    if (result != null)
+                    {
+                        foreach (var group in resourceGroups)
+                        {
+                            var resourceGroupOwner = OWNER_UNKNOWN;
+                            var defaultKeyValuePair = default(KeyValuePair<String, String>);
+                            var ownerTag = defaultKeyValuePair;
+                            if (group.Tags != null)
+                            {
+                                ownerTag = group.Tags.Where(tag => tag.Key.Equals(ownerTagName, StringComparison.InvariantCultureIgnoreCase)).FirstOrDefault();
+                            }
+
+                            if (!ownerTag.Equals(defaultKeyValuePair))
+                            {
+                                resourceGroupOwner = ownerTag.Value;
+                            }
+
+                            //Console.WriteLine($"Calculating costs for resource group {group.Name} in subscription {subscriptionId} which belongs to {resourceGroupOwner}");
+
+                            string keyNameGroup = $"{subscriptionId}/{group.Name}";
+                            if (!costPerUser.ContainsKey(resourceGroupOwner))
+                            {
+                                costPerUser.Add(resourceGroupOwner, 0);
+                            }
+                            if (!costPerGroup.ContainsKey(keyNameGroup))
+                            {
+                                costPerGroup.Add(keyNameGroup, 0);
+                            }
+                            if (!groupOwner.ContainsKey(keyNameGroup))
+                            {
+                                groupOwner.Add(keyNameGroup, resourceGroupOwner);
+                            }
+
+                            var groupRows = result.properties.rows.Where(rTemp => rTemp[groupIndex].ToString().Equals(group.Name, 
+                                StringComparison.InvariantCultureIgnoreCase)).ToArray();
+                            foreach (var row in groupRows)
+                            {
+                                costPerUser[resourceGroupOwner] += (Double)row[costIndex];
+                                costPerGroup[keyNameGroup] += (Double)row[costIndex];
+
+                                var currencyOfRow = (string)row[currencyIndex];
+                                if (String.IsNullOrEmpty(currency))
+                                {
+                                    currency = currencyOfRow;
+                                }
+                                else if (!currency.Equals(currencyOfRow))
+                                {
+                                    throw new Exception("There are different currencies");
+                                }
+                            }
+                        }
                     }
                 }
+                
+                Console.WriteLine($"##########################################");
+                Console.WriteLine($"Cost between {startDate} and {endDate} per resource group for unknown owner");
+                Console.WriteLine($"##########################################");
+                var subscriptionRgUnknown = costPerGroup.Where(temp => temp.Key.Split("/")[0].
+                    Equals(subscriptionId, StringComparison.InvariantCultureIgnoreCase));
+                foreach (KeyValuePair<string, double> costEntry in subscriptionRgUnknown.OrderByDescending(temp => temp.Value))
+                {
+                    if (groupOwner[costEntry.Key].Equals(OWNER_UNKNOWN, StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        Console.WriteLine($"{costEntry.Key}: {currency} {costEntry.Value}");
+                    }
+                }
+
             }
 
             Console.WriteLine($"##########################################");
@@ -167,7 +214,7 @@ namespace CostPerOwner
             Console.WriteLine($"##########################################");
             foreach (KeyValuePair<string, double> costEntry in costPerGroup.OrderByDescending(temp => temp.Value))
             {
-                Console.WriteLine($"{costEntry.Key}: {currency} {costEntry.Value}");
+                Console.WriteLine($"{costEntry.Key}: {currency} {costEntry.Value} (owner: {groupOwner[costEntry.Key]})");
             }
         }
 

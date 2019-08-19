@@ -67,6 +67,7 @@ namespace ResourceTagger
                 var resourceGroups = azureSub.ResourceGroups.List();
                 foreach (var group in resourceGroups)
                 {
+                    log.LogTrace($"Looking at resource group {group.Name}");
                     try
                     {
                         var defaultKeyValuePair = default(KeyValuePair<String, String>);
@@ -87,6 +88,7 @@ namespace ResourceTagger
                             var resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
                             if (resourceGroupCreateLogs.Length == 0)
                             {
+                                log.LogInformation($"Resource group {group.Name}: did not find create operation - trying again");
                                 startTime = DateTime.Now.ToUniversalTime().AddDays(-90).ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
                                 resourceGroupCreateLogs = await GetCreationLogs(startTime, endTime, resourceId, OPERATION_RESOURCEGROUP_WRITE, insightsClient);
                             }
@@ -100,10 +102,14 @@ namespace ResourceTagger
                                 await group.Update().WithTag(ownerTagName, newOwner).ApplyAsync();
                                 log.LogInformation($"Resource group {group.Name} tagged with owner {newOwner}");
                             }
+                            else
+                            {
+                                log.LogInformation($"Resource group {group.Name}: did not find create operation, please tag manually");
+                            }
                         }
                         else
                         {
-                            //Console.WriteLine($"Resource group {group.Name} is already owned by {ownerTag.Value}");
+                            log.LogTrace($"Resource group {group.Name} is already owned by {ownerTag.Value}");
                         }
                     }
                     catch (Exception ex)
@@ -118,7 +124,7 @@ namespace ResourceTagger
         {
             ODataQuery<EventData> query = new ODataQuery<EventData>($"eventTimestamp ge '{startTime}' and eventTimestamp le '{endTime}' and resourceUri eq '{resourceId}'");
             var logs = await client.Events.ListAsync(query);
-            return logs.Where(log => log.OperationName.Value.Equals(operation)).ToArray();
+            return logs.Where(log => log.OperationName.Value.Equals(operation, StringComparison.CurrentCultureIgnoreCase)).ToArray();
         }
     }
 }
